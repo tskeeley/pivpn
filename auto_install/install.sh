@@ -12,9 +12,11 @@
 
 
 ######## VARIABLES #########
-pivpnGitUrl="https://github.com/pivpn/pivpn.git"
+#pivpnGitUrl="https://github.com/pivpn/pivpn.git"
+pivpnGitUrl="https://github.com/tskeeley/pivpn.git"
 # Uncomment to checkout a custom branch for local pivpn files
 #pivpnGitBranch="custombranchtocheckout"
+pivpnGitBranch="openSUSE"
 setupVarsFile="setupVars.conf"
 setupConfigDir="/etc/pivpn"
 tempsetupVarsFile="/tmp/setupVars.conf"
@@ -28,14 +30,27 @@ dhcpcdFile="/etc/dhcpcd.conf"
 debianOvpnUserGroup="openvpn:openvpn"
 
 ######## PKG Vars ########
-PKG_MANAGER="apt-get"
-### FIXME: quoting UPDATE_PKG_CACHE and PKG_INSTALL hangs the script, shellcheck SC2086
-UPDATE_PKG_CACHE="${PKG_MANAGER} update -y"
-PKG_INSTALL="${PKG_MANAGER} --yes --no-install-recommends install"
-PKG_COUNT="${PKG_MANAGER} -s -o Debug::NoLocking=true upgrade | grep -c ^Inst || true"
-
-# Dependencies that are required by the script, regardless of the VPN protocol chosen
-BASE_DEPS=(git tar curl grep dnsutils grepcidr whiptail net-tools bsdmainutils bash-completion)
+if [ $(grep -c opensuse /etc/os-release) -gt 0 ]; then
+    PKG_MANAGER="zypper"
+    UPDATE_PKG_CACHE="${PKG_MANAGER} refresh"
+    PKG_INSTALL="${PKG_MANAGER} install -y --no-recommends"
+    PKG_COUNT="${PKG_MANAGER} list-updates | wc -l"
+    PKG_INSTALLED="${PKG_MANAGER} search -xi"
+    PKG_PROVIDES="${PKG_MANAGER} --what-provides"
+    # Dependencies that are required by the script, regardless of the VPN protocol chosen
+    BASE_DEPS=(git tar curl grep bind-utils grepcidr newt net-tools bash-completion)
+    ## Note: grepcidr is available only from build.opensuse.org at time o publish
+else
+    PKG_MANAGER="apt-get"
+    ### FIXME: quoting UPDATE_PKG_CACHE and PKG_INSTALL hangs the script, shellcheck SC2086
+    UPDATE_PKG_CACHE="${PKG_MANAGER} update -y"
+    PKG_INSTALL="${PKG_MANAGER} --yes --no-install-recommends install"
+    PKG_COUNT="${PKG_MANAGER} -s -o Debug::NoLocking=true upgrade | grep -c ^Inst || true"
+    PKG_INSTALLED="dpkg-query -s"
+    PKG_PROVIDES="dpkg-query -S"
+    # Dependencies that are required by the script, regardless of the VPN protocol chosen
+    BASE_DEPS=(git tar curl grep dnsutils grepcidr whiptail net-tools bsdmainutils bash-completion)
+fi
 
 # Dependencies that where actually installed by the script. For example if the script requires
 # grep and dnsutils but dnsutils is already installed, we save grep here. This way when uninstalling
@@ -169,7 +184,7 @@ rootCheck(){
 		echo "::: sudo will be used for the install."
 		# Check if it is actually installed
 		# If it isn't, exit because the install cannot complete
-		if [[ $(dpkg-query -s sudo) ]];then
+		if [[ $(${PKG_INSTALLED} sudo) ]];then
 			export SUDO="sudo"
 			export SUDOE="sudo -E"
 		else
@@ -283,14 +298,14 @@ distroCheck(){
 		source /etc/os-release
 		PLAT=$(awk '{print $1}' <<< "$NAME")
 		VER="$VERSION_ID"
-		declare -A VER_MAP=(["9"]="stretch" ["10"]="buster" ["11"]="bullseye" ["16.04"]="xenial" ["18.04"]="bionic" ["20.04"]="focal")
+		declare -A VER_MAP=(["9"]="stretch" ["10"]="buster" ["11"]="bullseye" ["16.04"]="xenial" ["18.04"]="bionic" ["20.04"]="focal" ["15.3"]="leap")
 		OSCN=${VER_MAP["${VER}"]}
 	fi
 
 	case ${PLAT} in
-		Debian|Raspbian|Ubuntu)
+		Debian|Raspbian|Ubuntu|openSUSE)
 			case ${OSCN} in
-				stretch|buster|bullseye|xenial|bionic|focal)
+				stretch|buster|bullseye|xenial|bionic|focal|leap)
 				:
 				;;
 				*)
@@ -308,36 +323,16 @@ distroCheck(){
 }
 
 noOSSupport(){
-	if [ "${runUnattended}" = 'true' ]; then
-		echo "::: Invalid OS detected"
-		echo "::: We have not been able to detect a supported OS."
-		echo "::: Currently this installer supports Raspbian, Debian and Ubuntu."
-		exit 1
-	fi
-
-	whiptail --msgbox --backtitle "INVALID OS DETECTED" --title "Invalid OS" "We have not been able to detect a supported OS.
-Currently this installer supports Raspbian, Debian and Ubuntu.
-For more details, check our documentation at https://github.com/pivpn/pivpn/wiki " ${r} ${c}
+	echo "::: Invalid OS detected"
+	echo "::: We have not been able to detect a supported OS."
+	echo "::: Currently this installer supports Raspbian, openSUSE, Debian and Ubuntu."
 	exit 1
 }
 
 maybeOSSupport(){
-	if [ "${runUnattended}" = 'true' ]; then
-		echo "::: OS Not Supported"
-		echo "::: You are on an OS that we have not tested but MAY work, continuing anyway..."
-		return
-	fi
-
-	if (whiptail --backtitle "Untested OS" --title "Untested OS" --yesno "You are on an OS that we have not tested but MAY work.
-Currently this installer supports Raspbian, Debian and Ubuntu.
-For more details about supported OS please check our documentation at https://github.com/pivpn/pivpn/wiki
-Would you like to continue anyway?" ${r} ${c}) then
-		echo "::: Did not detect perfectly supported OS but,"
-		echo "::: Continuing installation at user's own risk..."
-	else
-		echo "::: Exiting due to untested OS"
-		exit 1
-	fi
+	echo "::: OS Not Supported"
+	echo "::: You are on an OS that we have not tested but MAY work, continuing anyway..."
+	return
 }
 
 
@@ -443,82 +438,87 @@ notifyPackageUpdatesAvailable(){
 }
 
 preconfigurePackages(){
-	# Install packages used by this installation script
-	# If apt is older than 1.5 we need to install an additional package to add
-	# support for https repositories that will be used later on
-	if [[ -f /etc/apt/sources.list ]]; then
-		INSTALLED_APT="$(apt-cache policy apt | grep -m1 'Installed: ' | grep -v '(none)' | awk '{print $2}')"
-		if dpkg --compare-versions "$INSTALLED_APT" lt 1.5; then
-			BASE_DEPS+=("apt-transport-https")
-		fi
-	fi
+    if [ "${PLAT}" = "openSUSE" ]; then
+        OPENVPN_SUPPORT=1
+        WIREGUARD_SUPPORT=1
+    else
+        # Install packages used by this installation script
+        # If apt is older than 1.5 we need to install an additional package to add 
+        # support for https repositories that will be used later on
+        if [[ -f /etc/apt/sources.list ]]; then
+            INSTALLED_APT="$(apt-cache policy apt | grep -m1 'Installed: ' | grep -v '(none)' | awk '{print $2}')"
+            if dpkg --compare-versions "$INSTALLED_APT" lt 1.5; then
+                BASE_DEPS+=("apt-transport-https")
+            fi
+        fi
 
-	# We set static IP only on Raspbian
-	if [ "$PLAT" = "Raspbian" ]; then
-		BASE_DEPS+=(dhcpcd5)
-	fi
+        # We set static IP only on Raspbian
+        if [ "$PLAT" = "Raspbian" ]; then
+            BASE_DEPS+=(dhcpcd5)
+        fi
 
-	DPKG_ARCH="$(dpkg --print-architecture)"
+        DPKG_ARCH="$(dpkg --print-architecture)"
 
-	AVAILABLE_OPENVPN="$(apt-cache policy openvpn | grep -m1 'Candidate: ' | grep -v '(none)' | awk '{print $2}')"
-	OPENVPN_SUPPORT=0
-	NEED_OPENVPN_REPO=0
+        AVAILABLE_OPENVPN="$(apt-cache policy openvpn | grep -m1 'Candidate: ' | grep -v '(none)' | awk '{print $2}')"
+        OPENVPN_SUPPORT=0
+        NEED_OPENVPN_REPO=0
 
-	# We require OpenVPN 2.4 or later for ECC support. If not available in the
-	# repositories but we are running x86 Debian or Ubuntu, add the official repo
-	# which provides the updated package.
-	if [ -n "$AVAILABLE_OPENVPN" ] && dpkg --compare-versions "$AVAILABLE_OPENVPN" ge 2.4; then
-		OPENVPN_SUPPORT=1
-	else
-		if [ "$PLAT" = "Debian" ] || [ "$PLAT" = "Ubuntu" ]; then
-			if [ "$DPKG_ARCH" = "amd64" ] || [ "$DPKG_ARCH" = "i386" ]; then
-				NEED_OPENVPN_REPO=1
-				OPENVPN_SUPPORT=1
-			else
-				OPENVPN_SUPPORT=0
-			fi
-		else
-			OPENVPN_SUPPORT=0
-		fi
-	fi
+        # We require OpenVPN 2.4 or later for ECC support. If not available in the
+        # repositories but we are running x86 Debian or Ubuntu, add the official repo
+        # which provides the updated package.
+        if [ -n "$AVAILABLE_OPENVPN" ] && dpkg --compare-versions "$AVAILABLE_OPENVPN" ge 2.4; then
+            OPENVPN_SUPPORT=1
+        else
+            if [ "$PLAT" = "Debian" ] || [ "$PLAT" = "Ubuntu" ]; then
+                if [ "$DPKG_ARCH" = "amd64" ] || [ "$DPKG_ARCH" = "i386" ]; then
+                    NEED_OPENVPN_REPO=1
+                    OPENVPN_SUPPORT=1
+                else
+                    OPENVPN_SUPPORT=0
+                fi
+            else
+                OPENVPN_SUPPORT=0
+            fi
+        fi
 
-	AVAILABLE_WIREGUARD="$(apt-cache policy wireguard | grep -m1 'Candidate: ' | grep -v '(none)' | awk '{print $2}')"
-	WIREGUARD_SUPPORT=0
+        AVAILABLE_WIREGUARD="$(apt-cache policy wireguard | grep -m1 'Candidate: ' | grep -v '(none)' | awk '{print $2}')"
+        WIREGUARD_SUPPORT=0
 
-	# If a wireguard kernel object is found and is part of any installed package, then
-	# it has not been build via DKMS or manually (installing via wireguard-dkms does not
-	# make the module part of the package since the module itself is built at install time
-	# and not part of the .deb).
-	# Source: https://github.com/MichaIng/DietPi/blob/7bf5e1041f3b2972d7827c48215069d1c90eee07/dietpi/dietpi-software#L1807-L1815
-	WIREGUARD_BUILTIN=0
-	for i in /lib/modules/**/wireguard.ko; do
-		[[ -f $i ]] || continue
-		dpkg-query -S "$i" &> /dev/null || continue
-		WIREGUARD_BUILTIN=1
-		break
-	done
+        # If a wireguard kernel object is found and is part of any installed package, then
+        # it has not been build via DKMS or manually (installing via wireguard-dkms does not
+        # make the module part of the package since the module itself is built at install time
+        # and not part of the .deb).
+        # Source: https://github.com/MichaIng/DietPi/blob/7bf5e1041f3b2972d7827c48215069d1c90eee07/dietpi/dietpi-software#L1807-L1815
+        WIREGUARD_BUILTIN=0
+        for i in /lib/modules/**/wireguard.ko; do
+            [[ -f $i ]] || continue
+            ${PKG_PROVIDES} "$i" &> /dev/null || continue
+            WIREGUARD_BUILTIN=1
+            break
+        done
 
-	if
-		# If the module is builtin and the package available, we only need to install wireguard-tools.
-		[[ $WIREGUARD_BUILTIN == 1 && -n $AVAILABLE_WIREGUARD ]] ||
-		# If the package is not available, on Debian and Raspbian we can add it via Bullseye repository.
-		[[ $WIREGUARD_BUILTIN == 1 && ( $PLAT == 'Debian' || $PLAT == 'Raspbian' ) ]] ||
-		# If the module is not builtin, on Raspbian we know the headers package: raspberrypi-kernel-headers
-		[[ $PLAT == 'Raspbian' ]] ||
-		# On Debian (and Ubuntu), we can only reliably assume the headers package for amd64: linux-image-amd64
-		[[ $PLAT == 'Debian' && $DPKG_ARCH == 'amd64' ]] ||
-		# On Ubuntu, additionally the WireGuard package needs to be available, since we didn't test mixing Ubuntu repositories.
-		[[ $PLAT == 'Ubuntu' && $DPKG_ARCH == 'amd64' && -n $AVAILABLE_WIREGUARD ]] ||
-		# Ubuntu focal has wireguard support
-		[[ $PLAT == 'Ubuntu' && $DPKG_ARCH == 'arm64' && $OSCN == 'focal' && -n $AVAILABLE_WIREGUARD ]]
-	then
-		WIREGUARD_SUPPORT=1
-	fi
+        if
+            # If the module is builtin and the package available, we only need to install wireguard-tools.
+            [[ $WIREGUARD_BUILTIN == 1 && -n $AVAILABLE_WIREGUARD ]] ||
+            # If the package is not available, on Debian and Raspbian we can add it via Bullseye repository.
+            [[ $WIREGUARD_BUILTIN == 1 && ( $PLAT == 'Debian' || $PLAT == 'Raspbian' ) ]] ||
+            # If the module is not builtin, on Raspbian we know the headers package: raspberrypi-kernel-headers
+            [[ $PLAT == 'Raspbian' ]] ||
+            # On Debian (and Ubuntu), we can only reliably assume the headers package for amd64: linux-image-amd64
+            [[ $PLAT == 'Debian' && $DPKG_ARCH == 'amd64' ]] ||
+            # On Ubuntu, additionally the WireGuard package needs to be available, since we didn't test mixing Ubuntu repositories.
+            [[ $PLAT == 'Ubuntu' && $DPKG_ARCH == 'amd64' && -n $AVAILABLE_WIREGUARD ]] ||
+            # Ubuntu focal has wireguard support
+            [[ $PLAT == 'Ubuntu' && $DPKG_ARCH == 'arm64' && $OSCN == 'focal' && -n $AVAILABLE_WIREGUARD ]]
+        then
+            WIREGUARD_SUPPORT=1
+        fi
 
-	if [ "$OPENVPN_SUPPORT" -eq 0 ] && [ "$WIREGUARD_SUPPORT" -eq 0 ]; then
-		echo "::: Neither OpenVPN nor WireGuard are available to install by PiVPN, exiting..."
-		exit 1
-	fi
+        if [ "$OPENVPN_SUPPORT" -eq 0 ] && [ "$WIREGUARD_SUPPORT" -eq 0 ]; then
+            echo "::: Neither OpenVPN nor WireGuard are available to install by PiVPN, exiting..."
+            exit 1
+        fi
+    fi
 
 	# if ufw is enabled, configure that.
 	# running as root because sometimes the executable is not in the user's $PATH
@@ -532,10 +532,10 @@ preconfigurePackages(){
 		USING_UFW=0
 	fi
 
-	if [ "$USING_UFW" -eq 0 ]; then
-		BASE_DEPS+=(iptables-persistent)
-		echo iptables-persistent iptables-persistent/autosave_v4 boolean true | $SUDO debconf-set-selections
-		echo iptables-persistent iptables-persistent/autosave_v6 boolean false | $SUDO debconf-set-selections
+	if [ "$USING_UFW" -eq 0 -a "${PLAT}" != "openSUSE" ]; then
+        BASE_DEPS+=(iptables-persistent)
+        echo iptables-persistent iptables-persistent/autosave_v4 boolean true | $SUDO debconf-set-selections
+        echo iptables-persistent iptables-persistent/autosave_v6 boolean false | $SUDO debconf-set-selections
 	fi
 
 	echo "USING_UFW=${USING_UFW}" >> ${tempsetupVarsFile}
@@ -552,7 +552,7 @@ installDependentPackages(){
 
 	for i in "${argArray1[@]}"; do
 		echo -n ":::    Checking for $i..."
-		if dpkg-query -W -f='${Status}' "${i}" 2>/dev/null | grep -q "ok installed"; then
+		if ($(${PKG_INSTALLED} ${i} > /dev/null)); then
 			echo " already installed!"
 		else
 			echo " not installed!"
@@ -575,7 +575,7 @@ installDependentPackages(){
 	local FAILED=0
 
 	for i in "${TO_INSTALL[@]}"; do
-		if dpkg-query -W -f='${Status}' "${i}" 2>/dev/null | grep -q "ok installed"; then
+		if [[ $(${PKG_INSTALLED} ${i}) ]]; then
 			echo ":::    Package $i successfully installed!"
 			# Add this package to the total list of packages that were actually installed by the script
 			INSTALLED_PACKAGES+=("${i}")
@@ -2169,7 +2169,7 @@ confOVPN(){
 
 confWireGuard(){
 	# Reload job type is not yet available in wireguard-tools shipped with Ubuntu 20.04
-	if ! grep -q 'ExecReload' /lib/systemd/system/wg-quick@.service; then
+	if ! grep -q 'ExecReload' /etc/systemd/system/wg-quick@.service; then
 		echo "::: Adding additional reload job type for wg-quick unit"
 		$SUDO install -D -m 644 "${pivpnFilesDir}"/files/etc/systemd/system/wg-quick@.service.d/override.conf /etc/systemd/system/wg-quick@.service.d/override.conf
 		$SUDO systemctl daemon-reload
@@ -2474,11 +2474,64 @@ askUnattendedUpgrades(){
 
 confUnattendedUpgrades(){
 	local PIVPN_DEPS
-	PIVPN_DEPS=(unattended-upgrades)
-	installDependentPackages PIVPN_DEPS[@]
-	aptConfDir="/etc/apt/apt.conf.d"
 
-	if [ "$PLAT" = "Ubuntu" ]; then
+	if [ "$PLAT" = "openSUSE" ]; then
+        PIVPN_DEPS=(yast2-online-update-configuration)
+        installDependentPackages PIVPN_DEPS[@]
+        
+        $SUDO echo '## Path: System/Yast2/AutomaticOnlineUpdate
+## Description: Automatic Online Update
+
+## Type:    boolean
+## Default: "true"
+#
+# This switch can temporarily disable the automatic online
+# update cronjob when set to "false". It will be reset through
+# "yast2 online_update_configuration" if the cronjob for the
+# automatic online update is _not_ removed. On the other hand, if
+# a cronjob file is missing in cron.*ly this switch has no effect.
+#
+#
+AOU_ENABLE_CRONJOB="true"
+
+
+## Type:    boolean
+## Default: "true"
+#
+# This will skip interactive patches during an automatic
+# online update run.
+#
+AOU_SKIP_INTERACTIVE_PATCHES="true"
+
+
+## Type:    boolean
+## Default: "false"
+#
+# Automatically agree with licenses.
+#
+AOU_AUTO_AGREE_WITH_LICENSES="true"
+
+## Type:    boolean
+## Default: "false"
+#
+# Include packages that are recommended by patches.
+#
+AOU_INCLUDE_RECOMMENDS="false"
+
+
+## Type: string
+## Default: ""
+#
+# Only install patches of these categories.
+# Space separated list of categories.
+# Most prominent categories are: (security recommended optional pkgmanager feature document)
+#
+AOU_PATCH_CATEGORIES=""' > /etc/sysconfig/automatic_online_update
+        $SUDO ln -s /usr/lib/YaST2/bin/online_upate /etc/cron.daily/
+    elif [ "$PLAT" = "Ubuntu" ]; then
+        PIVPN_DEPS=(unattended-upgrades)
+        installDependentPackages PIVPN_DEPS[@]
+        aptConfDir="/etc/apt/apt.conf.d"
 
 		# Ubuntu 50unattended-upgrades should already just have security enabled
 		# so we just need to configure the 10periodic file
@@ -2488,6 +2541,9 @@ confUnattendedUpgrades(){
 	APT::Periodic::Unattended-Upgrade \"1\";" | $SUDO tee "${aptConfDir}/10periodic" > /dev/null
 
 	else
+        PIVPN_DEPS=(unattended-upgrades)
+        installDependentPackages PIVPN_DEPS[@]
+        aptConfDir="/etc/apt/apt.conf.d"
 
 		# Raspbian's unattended-upgrades package downloads Debian's config, so we copy over the proper config
 		# Source: https://github.com/mvo5/unattended-upgrades/blob/master/data/50unattended-upgrades.Raspbian
