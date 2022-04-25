@@ -441,6 +441,10 @@ preconfigurePackages(){
     if [ "${PLAT}" = "openSUSE" ]; then
         OPENVPN_SUPPORT=1
         WIREGUARD_SUPPORT=1
+        if [ $($SUDO zypper repos | grep -c "all the small tools for the shell") -ne 1 ]; then
+            $SUDO zypper addrepo -f https://download.opensuse.org/repositories/utilities/openSUSE_Leap_15.3/utilities.repo
+            $SUDO zypper --gpg-auto-import-keys refresh utilities
+        fi
     else
         # Install packages used by this installation script
         # If apt is older than 1.5 we need to install an additional package to add 
@@ -564,31 +568,33 @@ installDependentPackages(){
 	local APTLOGFILE
 	APTLOGFILE="$($SUDO mktemp)"
 
-	if [ "${runUnattended}" = 'true' ]; then
-		# shellcheck disable=SC2086
-		$SUDO ${PKG_INSTALL} "${TO_INSTALL[@]}"
-	else
-		# shellcheck disable=SC2086
-		$SUDO ${PKG_INSTALL} "${TO_INSTALL[@]}"
-	fi
+    if [ ${#TO_INSTALL[@]} -gt 0 ]; then
+        if [ "${runUnattended}" = 'true' ]; then
+            # shellcheck disable=SC2086
+            $SUDO ${PKG_INSTALL} "${TO_INSTALL[@]}"
+        else
+            # shellcheck disable=SC2086
+            $SUDO ${PKG_INSTALL} "${TO_INSTALL[@]}"
+        fi
 
-	local FAILED=0
+        local FAILED=0
 
-	for i in "${TO_INSTALL[@]}"; do
-		if [[ $(${PKG_INSTALLED} ${i}) ]]; then
-			echo ":::    Package $i successfully installed!"
-			# Add this package to the total list of packages that were actually installed by the script
-			INSTALLED_PACKAGES+=("${i}")
-		else
-			echo ":::    Failed to install $i!"
-			((FAILED++))
-		fi
-	done
+        for i in "${TO_INSTALL[@]}"; do
+            if ($(${PKG_INSTALLED} ${i} > /dev/null)); then
+                echo ":::    Package $i successfully installed!"
+                # Add this package to the total list of packages that were actually installed by the script
+                INSTALLED_PACKAGES+=("${i}")
+            else
+                echo ":::    Failed to install $i!"
+                ((FAILED++))
+            fi
+        done
 
-	if [ "$FAILED" -gt 0 ]; then
-		$SUDO cat "${APTLOGFILE}"
-		exit 1
-	fi
+        if [ "$FAILED" -gt 0 ]; then
+            $SUDO cat "${APTLOGFILE}"
+            exit 1
+        fi
+    fi
 }
 
 welcomeDialogs(){
@@ -1466,6 +1472,14 @@ installWireGuard(){
 
 		installDependentPackages PIVPN_DEPS[@]
 
+	elif [ "$PLAT" = "openSUSE" ]; then
+
+		echo "::: Installing WireGuard... "
+
+		PIVPN_DEPS=(wireguard-tools qrencode)
+
+		installDependentPackages PIVPN_DEPS[@]
+
 	fi
 }
 
@@ -2169,7 +2183,7 @@ confOVPN(){
 
 confWireGuard(){
 	# Reload job type is not yet available in wireguard-tools shipped with Ubuntu 20.04
-	if ! grep -q 'ExecReload' /etc/systemd/system/wg-quick@.service; then
+	if ! grep -q 'ExecReload' /usr/lib//systemd/system/wg-quick@.service; then
 		echo "::: Adding additional reload job type for wg-quick unit"
 		$SUDO install -D -m 644 "${pivpnFilesDir}"/files/etc/systemd/system/wg-quick@.service.d/override.conf /etc/systemd/system/wg-quick@.service.d/override.conf
 		$SUDO systemctl daemon-reload
@@ -2479,7 +2493,7 @@ confUnattendedUpgrades(){
         PIVPN_DEPS=(yast2-online-update-configuration)
         installDependentPackages PIVPN_DEPS[@]
         
-        $SUDO echo '## Path: System/Yast2/AutomaticOnlineUpdate
+        echo '## Path: System/Yast2/AutomaticOnlineUpdate
 ## Description: Automatic Online Update
 
 ## Type:    boolean
@@ -2526,8 +2540,8 @@ AOU_INCLUDE_RECOMMENDS="false"
 # Space separated list of categories.
 # Most prominent categories are: (security recommended optional pkgmanager feature document)
 #
-AOU_PATCH_CATEGORIES=""' > /etc/sysconfig/automatic_online_update
-        $SUDO ln -s /usr/lib/YaST2/bin/online_upate /etc/cron.daily/
+AOU_PATCH_CATEGORIES=""' | $SUDO tee /etc/sysconfig/automatic_online_update > /dev/null
+        $SUDO ln -fs /usr/lib/YaST2/bin/online_upate /etc/cron.daily/
     elif [ "$PLAT" = "Ubuntu" ]; then
         PIVPN_DEPS=(unattended-upgrades)
         installDependentPackages PIVPN_DEPS[@]

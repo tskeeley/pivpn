@@ -57,7 +57,7 @@ done
 # The home folder variable was sourced from the settings file.
 if [ ! -d "${install_home}/configs" ]; then
     mkdir "${install_home}/configs"
-    chown "${install_user}":"${install_user}" "${install_home}/configs"
+    chown "${install_user}":"$(id -ng ${install_user})" "${install_home}/configs"
     chmod 0750 "${install_home}/configs"
 fi
 
@@ -178,7 +178,7 @@ else
 fi
 
 cp "configs/${CLIENT_NAME}.conf" "${install_home}/configs/${CLIENT_NAME}.conf"
-chown "${install_user}":"${install_user}" "${install_home}/configs/${CLIENT_NAME}.conf"
+chown "${install_user}":"$(id -ng ${install_user})" "${install_home}/configs/${CLIENT_NAME}.conf"
 chmod 640 "${install_home}/configs/${CLIENT_NAME}.conf"
 
 echo "======================================================================"
